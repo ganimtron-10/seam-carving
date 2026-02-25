@@ -17,12 +17,7 @@ type RawImage struct {
 	Height int
 }
 
-func (r *RawImage) GetRGB(x, y int) (int, int, int) {
-	startPos := y*r.Stride + x*4
-	return int(r.Data[startPos]), int(r.Data[startPos+1]), int(r.Data[startPos+2])
-}
-
-func (r *RawImage) toImage(filename string) error {
+func (r *RawImage) toImageFile(filename string) error {
 	img := image.NewRGBA(image.Rect(0, 0, r.Width, r.Height))
 
 	for y := 0; y < r.Height; y++ {
@@ -71,9 +66,13 @@ func LoadImage(path string) (*RawImage, error) {
 	}, nil
 }
 
-func CalculateEnergy(image *RawImage) []int {
-	energyMap := make([]int, image.Width*image.Height)
-	for y := 0; y < image.Height; y++ {
+func CalculateEnergy(image *RawImage, energyMap []int) []int {
+	for y := 1; y < image.Height-1; y++ {
+		rowIdx := y * image.Stride
+		prevRow := (y - 1) * image.Stride
+		nextRow := (y + 1) * image.Stride
+		mapOff := y * image.Width
+
 		for x := 0; x < image.Width; x++ {
 
 			leftX, rightX := x-1, x+1
@@ -84,81 +83,85 @@ func CalculateEnergy(image *RawImage) []int {
 				rightX = x
 			}
 
-			topY, botY := y-1, y+1
-			if y == 0 {
-				topY = y
-			}
-			if y == image.Height-1 {
-				botY = y
-			}
-
-			r1, g1, b1 := image.GetRGB(leftX, y)
-			r2, g2, b2 := image.GetRGB(rightX, y)
-			rx, gx, bx := r2-r1, g2-g1, b2-b1
+			leftXPos := rowIdx + leftX*4
+			rightXPos := rowIdx + rightX*4
+			r1, g1, b1 := image.Data[leftXPos], image.Data[leftXPos+1], image.Data[leftXPos+2]
+			r2, g2, b2 := image.Data[rightXPos], image.Data[rightXPos+1], image.Data[rightXPos+2]
+			rx, gx, bx := int(r2-r1), int(g2-g1), int(b2-b1)
 			dx := rx*rx + gx*gx + bx*bx
 
-			r1, g1, b1 = image.GetRGB(x, topY)
-			r2, g2, b2 = image.GetRGB(x, botY)
-			ry, gy, by := r2-r1, g2-g1, b2-b1
+			topYPos := prevRow + x*4
+			botYPos := nextRow + x*4
+			r1, g1, b1 = image.Data[topYPos], image.Data[topYPos+1], image.Data[topYPos+2]
+			r2, g2, b2 = image.Data[botYPos], image.Data[botYPos+1], image.Data[botYPos+2]
+			ry, gy, by := int(r2-r1), int(g2-g1), int(b2-b1)
 			dy := ry*ry + gy*gy + by*by
 
-			energyMap[y*image.Width+x] = dx + dy
+			energyMap[mapOff+x] = dx + dy
 		}
 	}
 	return energyMap
 }
 
-func CalculateAndRemoveSeam(image *RawImage, energyMap []int) {
+func CalculateAndRemoveSeam(image *RawImage, energyMap, cumulativeEnergy, seam []int, prevMinIndex []int8) {
 	width, height := image.Width, image.Height
 
-	energy := make([]int, len(energyMap))
-	prevMinIndex := make([]int, len(energyMap))
-	copy(energy, energyMap)
+	copy(cumulativeEnergy, energyMap)
 
 	// Calculate Seam
-	// Cal actual Energy
+	// Cal cumulative Energy
 	for y := 1; y < height; y++ {
 		for x := 0; x < width; x++ {
-			prevMin := 0
-			minValue := energy[y*width+x+prevMin]
 
-			if x > 0 && energy[y*width+x-1] < minValue {
-				prevMin = -1
-				minValue = energy[y*width+x+prevMin]
+			prevRow := (y - 1) * width
+			curRow := y * width
+
+			prevRowWithX := prevRow + x
+
+			prevMinOffset := 0
+			minValue := cumulativeEnergy[prevRowWithX+prevMinOffset]
+
+			if x > 0 && cumulativeEnergy[prevRowWithX-1] < minValue {
+				prevMinOffset = -1
+				minValue = cumulativeEnergy[prevRowWithX+prevMinOffset]
 			}
-			if x < width-1 && energy[y*width+x+1] < minValue {
-				prevMin = 1
-				minValue = energy[y*width+x+prevMin]
+			if x < width-1 && cumulativeEnergy[prevRowWithX+1] < minValue {
+				prevMinOffset = 1
+				minValue = cumulativeEnergy[prevRowWithX+prevMinOffset]
 			}
 
-			energy[y*width+x] += minValue
-			prevMinIndex[y*width+x] = prevMin
+			cumulativeEnergy[curRow+x] += minValue
+			prevMinIndex[curRow+x] = int8(prevMinOffset)
 		}
 	}
+
 	// Cal least energy
-	minXValue := energy[(height-1)*width]
+	minXValue := cumulativeEnergy[(height-1)*width]
 	curX := 0
 	for x := 1; x < width; x++ {
-		if energy[(height-1)*width+x] < minXValue {
-			minXValue = energy[(height-1)*width+x]
+		if cumulativeEnergy[(height-1)*width+x] < minXValue {
+			minXValue = cumulativeEnergy[(height-1)*width+x]
 			curX = x
 		}
 	}
-	// Backtrack & Remove Seam
-	xPos := curX
-	for y := height - 1; y >= 0; y-- {
-		// for x := xPos; x < width-1; x++ {
-		// 	startPos := y*image.Stride + x*4
 
-		// 	image.Data[startPos+0] = image.Data[startPos+4+0]
-		// 	image.Data[startPos+1] = image.Data[startPos+4+1]
-		// 	image.Data[startPos+2] = image.Data[startPos+4+2]
-		// 	image.Data[startPos+3] = image.Data[startPos+4+3]
-		// }
-		startPos := y*image.Stride + xPos*4
-		endPos := y*image.Stride + image.Width*4
+	// Calculate Seam
+	for y := height - 1; y >= 0; y-- {
+		seam[y] = curX
+		if y > 0 {
+			curX += int(prevMinIndex[y*width+curX])
+		}
+	}
+
+	// Remove Seam
+	for y := 0; y < height; y++ {
+
+		curRow := y * image.Stride
+
+		startPos := curRow + int(seam[y])*4
+		endPos := curRow + width*4
 		copy(image.Data[startPos:endPos], image.Data[startPos+4:endPos])
-		xPos = xPos + prevMinIndex[y*width+xPos]
+
 	}
 
 	image.Width--
@@ -172,12 +175,17 @@ func main() {
 		fmt.Println(err.Error())
 	}
 
+	energyMap := make([]int, image.Width*image.Height)
+	cumulativeEnergy := make([]int, len(energyMap))
+	prevMinIndex := make([]int8, len(energyMap))
+	seam := make([]int, image.Height)
+
 	for i := 0; i < 50; i++ {
 		fmt.Println(i)
 
-		energyMap := CalculateEnergy(image)
-		CalculateAndRemoveSeam(image, energyMap)
+		CalculateEnergy(image, energyMap)
+		CalculateAndRemoveSeam(image, energyMap, cumulativeEnergy, seam, prevMinIndex)
 	}
 
-	image.toImage("output.jpg")
+	image.toImageFile("output.jpg")
 }
