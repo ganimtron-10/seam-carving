@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"image"
 	"image/draw"
+	"image/jpeg"
 	_ "image/jpeg"
-	"image/png"
 	_ "image/png"
 	"os"
 )
@@ -22,7 +22,7 @@ func (r *RawImage) GetRGB(x, y int) (int, int, int) {
 	return int(r.Data[startPos]), int(r.Data[startPos+1]), int(r.Data[startPos+2])
 }
 
-func (r *RawImage) toPNG(filename string) error {
+func (r *RawImage) toImage(filename string) error {
 	img := image.NewRGBA(image.Rect(0, 0, r.Width, r.Height))
 
 	for y := 0; y < r.Height; y++ {
@@ -41,7 +41,8 @@ func (r *RawImage) toPNG(filename string) error {
 	}
 	defer f.Close()
 
-	return png.Encode(f, img)
+	// return png.Encode(f, img)
+	return jpeg.Encode(f, img, &jpeg.Options{Quality: 90})
 }
 
 func LoadImage(path string) (*RawImage, error) {
@@ -146,14 +147,17 @@ func CalculateAndRemoveSeam(image *RawImage, energyMap []int) {
 	// Backtrack & Remove Seam
 	xPos := curX
 	for y := height - 1; y >= 0; y-- {
-		for x := xPos; x < width-1; x++ {
-			startPos := y*image.Stride + x*4
+		// for x := xPos; x < width-1; x++ {
+		// 	startPos := y*image.Stride + x*4
 
-			image.Data[startPos+0] = image.Data[startPos+4+0]
-			image.Data[startPos+1] = image.Data[startPos+4+1]
-			image.Data[startPos+2] = image.Data[startPos+4+2]
-			image.Data[startPos+3] = image.Data[startPos+4+3]
-		}
+		// 	image.Data[startPos+0] = image.Data[startPos+4+0]
+		// 	image.Data[startPos+1] = image.Data[startPos+4+1]
+		// 	image.Data[startPos+2] = image.Data[startPos+4+2]
+		// 	image.Data[startPos+3] = image.Data[startPos+4+3]
+		// }
+		startPos := y*image.Stride + xPos*4
+		endPos := y*image.Stride + image.Width*4
+		copy(image.Data[startPos:endPos], image.Data[startPos+4:endPos])
 		xPos = xPos + prevMinIndex[y*width+xPos]
 	}
 
@@ -168,12 +172,12 @@ func main() {
 		fmt.Println(err.Error())
 	}
 
-	for i := 0; i < 500; i++ {
+	for i := 0; i < 50; i++ {
 		fmt.Println(i)
 
 		energyMap := CalculateEnergy(image)
 		CalculateAndRemoveSeam(image, energyMap)
 	}
 
-	image.toPNG("output.png")
+	image.toImage("output.jpg")
 }
