@@ -8,6 +8,8 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 	"os"
+	"runtime"
+	"sync"
 )
 
 type RawImage struct {
@@ -60,26 +62,28 @@ func LoadImage(path string) (*RawImage, error) {
 
 	return &RawImage{
 		Data:   dstImg.Pix,
-		Stride: (dstImg.Stride),
-		Width:  (width),
-		Height: (height),
+		Stride: dstImg.Stride,
+		Width:  width,
+		Height: height,
 	}, nil
 }
 
-func CalculateEnergy(image *RawImage, energyMap []int) []int {
-	for y := 1; y < image.Height-1; y++ {
+func CalculateEnergy(image *RawImage, energyMap []int) {
+	width, height := image.Width, image.Height
+
+	for y := 1; y < height-1; y++ {
 		rowIdx := y * image.Stride
 		prevRow := (y - 1) * image.Stride
 		nextRow := (y + 1) * image.Stride
-		mapOff := y * image.Width
+		mapOff := y * width
 
-		for x := 0; x < image.Width; x++ {
+		for x := 0; x < width; x++ {
 
 			leftX, rightX := x-1, x+1
 			if x == 0 {
 				leftX = x
 			}
-			if x == image.Width-1 {
+			if x == width-1 {
 				rightX = x
 			}
 
@@ -100,47 +104,44 @@ func CalculateEnergy(image *RawImage, energyMap []int) []int {
 			energyMap[mapOff+x] = dx + dy
 		}
 	}
-	return energyMap
 }
 
-func CalculateAndRemoveSeam(image *RawImage, energyMap, cumulativeEnergy, seam []int, prevMinIndex []int8) {
+func CalculateAndRemoveSeam(image *RawImage, energyMap, seam []int, prevMinIndex []int8) {
 	width, height := image.Width, image.Height
-
-	copy(cumulativeEnergy, energyMap)
 
 	// Calculate Seam
 	// Cal cumulative Energy
 	for y := 1; y < height; y++ {
-		for x := 0; x < width; x++ {
+		prevRow := (y - 1) * width
+		curRow := y * width
 
-			prevRow := (y - 1) * width
-			curRow := y * width
+		for x := 0; x < width; x++ {
 
 			prevRowWithX := prevRow + x
 
 			prevMinOffset := 0
-			minValue := cumulativeEnergy[prevRowWithX+prevMinOffset]
+			minValue := energyMap[prevRowWithX+prevMinOffset]
 
-			if x > 0 && cumulativeEnergy[prevRowWithX-1] < minValue {
+			if x > 0 && energyMap[prevRowWithX-1] < minValue {
 				prevMinOffset = -1
-				minValue = cumulativeEnergy[prevRowWithX+prevMinOffset]
+				minValue = energyMap[prevRowWithX+prevMinOffset]
 			}
-			if x < width-1 && cumulativeEnergy[prevRowWithX+1] < minValue {
+			if x < width-1 && energyMap[prevRowWithX+1] < minValue {
 				prevMinOffset = 1
-				minValue = cumulativeEnergy[prevRowWithX+prevMinOffset]
+				minValue = energyMap[prevRowWithX+prevMinOffset]
 			}
 
-			cumulativeEnergy[curRow+x] += minValue
+			energyMap[curRow+x] += minValue
 			prevMinIndex[curRow+x] = int8(prevMinOffset)
 		}
 	}
 
 	// Cal least energy
-	minXValue := cumulativeEnergy[(height-1)*width]
+	minXValue := energyMap[(height-1)*width]
 	curX := 0
 	for x := 1; x < width; x++ {
-		if cumulativeEnergy[(height-1)*width+x] < minXValue {
-			minXValue = cumulativeEnergy[(height-1)*width+x]
+		if energyMap[(height-1)*width+x] < minXValue {
+			minXValue = energyMap[(height-1)*width+x]
 			curX = x
 		}
 	}
@@ -168,24 +169,168 @@ func CalculateAndRemoveSeam(image *RawImage, energyMap, cumulativeEnergy, seam [
 
 }
 
-func main() {
+func RemoveBatchSeams(img *RawImage, batchSize int, energyMap []int, prevIdx []int8) {
+	w, h := img.Width, img.Height
 
-	image, err := LoadImage("test.jpg")
+	for y := 1; y < h; y++ {
+		curr, prev := y*w, (y-1)*w
+		for x := 0; x < w; x++ {
+			bestX, m := x, energyMap[prev+x]
+			if x > 0 && energyMap[prev+x-1] < m {
+				bestX, m = x-1, energyMap[prev+x-1]
+			}
+			if x < w-1 && energyMap[prev+x+1] < m {
+				bestX, m = x+1, energyMap[prev+x+1]
+			}
+			energyMap[curr+x] += m
+			prevIdx[curr+x] = int8(bestX - x)
+		}
+	}
+
+	toDelete := make([]bool, w*h)
+
+	for b := 0; b < batchSize; b++ {
+		minX, minVal := -1, 2147483647
+		lastRow := (h - 1) * w
+		for x := 0; x < w; x++ {
+			if !toDelete[lastRow+x] && energyMap[lastRow+x] < minVal {
+				minVal = energyMap[lastRow+x]
+				minX = x
+			}
+		}
+
+		if minX == -1 {
+			break
+		}
+
+		currX := minX
+		for y := h - 1; y >= 0; y-- {
+			toDelete[y*w+currX] = true
+			energyMap[y*w+currX] = 2147483647
+			if y > 0 {
+				currX += int(prevIdx[y*w+currX])
+			}
+		}
+	}
+
+	for y := 0; y < h; y++ {
+		writeIdx := 0
+		rowStart := y * img.Stride
+		mapStart := y * w
+		for x := 0; x < w; x++ {
+			if !toDelete[mapStart+x] {
+				if writeIdx != x {
+					copy(img.Data[rowStart+writeIdx*4:rowStart+writeIdx*4+4], img.Data[rowStart+x*4:rowStart+x*4+4])
+				}
+				writeIdx++
+			}
+		}
+	}
+	img.Width -= batchSize
+}
+
+func CalculateEnergyParallel(img *RawImage, energyMap []int) {
+	numCPUs := runtime.NumCPU()
+	var wg sync.WaitGroup
+	chunkSize := img.Height / numCPUs
+
+	for i := 0; i < numCPUs; i++ {
+		startY, endY := i*chunkSize, (i+1)*chunkSize
+		if i == numCPUs-1 {
+			endY = img.Height
+		}
+		wg.Add(1)
+		go func(yStart, yEnd int) {
+			defer wg.Done()
+			for y := yStart; y < yEnd; y++ {
+				rowOff, mapOff := y*img.Stride, y*img.Width
+				upRow := (y - 1) * img.Stride
+				downRow := (y + 1) * img.Stride
+				if y == 0 {
+					upRow = rowOff
+				}
+				if y == img.Height-1 {
+					downRow = rowOff
+				}
+
+				for x := 0; x < img.Width; x++ {
+					l, r := (x-1)*4, (x+1)*4
+					if x == 0 {
+						l = 0
+					}
+					if x == img.Width-1 {
+						r = x * 4
+					}
+
+					// X-Gradient
+					dxR := int(img.Data[rowOff+r]) - int(img.Data[rowOff+l])
+					dxG := int(img.Data[rowOff+r+1]) - int(img.Data[rowOff+l+1])
+					dxB := int(img.Data[rowOff+r+2]) - int(img.Data[rowOff+l+2])
+
+					// Y-Gradient
+					dyR := int(img.Data[downRow+x*4]) - int(img.Data[upRow+x*4])
+					dyG := int(img.Data[downRow+x*4+1]) - int(img.Data[upRow+x*4+1])
+					dyB := int(img.Data[downRow+x*4+2]) - int(img.Data[upRow+x*4+2])
+
+					energyMap[mapOff+x] = (dxR*dxR + dxG*dxG + dxB*dxB) + (dyR*dyR + dyG*dyG + dyB*dyB)
+				}
+			}
+		}(startY, endY)
+	}
+	wg.Wait()
+}
+
+func mainWithoutConcurrency() {
+	imgName := "images/img1.jpg"
+	image, err := LoadImage(imgName)
 	if err != nil {
 		fmt.Println(err.Error())
 	}
 
 	energyMap := make([]int, image.Width*image.Height)
-	cumulativeEnergy := make([]int, len(energyMap))
 	prevMinIndex := make([]int8, len(energyMap))
 	seam := make([]int, image.Height)
+
+	CalculateEnergy(image, energyMap)
 
 	for i := 0; i < 50; i++ {
 		fmt.Println(i)
 
-		CalculateEnergy(image, energyMap)
-		CalculateAndRemoveSeam(image, energyMap, cumulativeEnergy, seam, prevMinIndex)
+		CalculateAndRemoveSeam(image, energyMap, seam, prevMinIndex)
 	}
 
-	image.toImageFile("output.jpg")
+	image.toImageFile("out-" + imgName)
+}
+
+func mainWithConcurrency() {
+	imgName := "images/img2.jpg"
+	img, err := LoadImage(imgName)
+	if err != nil {
+		fmt.Println("Error loading:", err)
+		return
+	}
+
+	totalToRemove := 2500
+	batchSize := 100
+
+	energyBuf := make([]int, img.Width*img.Height)
+	prevIndexBuf := make([]int8, img.Width*img.Height)
+
+	fmt.Printf("Resizing from %d to %d...\n", img.Width, img.Width-totalToRemove)
+
+	for i := 0; i < totalToRemove; i += batchSize {
+		CalculateEnergyParallel(img, energyBuf[:img.Width*img.Height])
+		RemoveBatchSeams(img, batchSize, energyBuf[:img.Width*img.Height], prevIndexBuf[:img.Width*img.Height])
+		fmt.Printf("Removed %d/%d seams\n", i+batchSize, totalToRemove)
+	}
+
+	img.toImageFile("out-" + imgName)
+}
+
+func main() {
+	// Run Seam Carving without Concurrency
+	mainWithConcurrency()
+
+	// Run Seam Carving with Concurrency
+	mainWithoutConcurrency()
 }
