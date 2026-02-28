@@ -56,3 +56,14 @@ The implementation provides two main entry points within `main.go`:
 * Uses `CalculateEnergyParallel` to distribute workload.
 * Uses `RemoveBatchSeams` to delete multiple paths simultaneously, reducing the overhead of re-scanning the image.
 * Outputs: `out-img2.jpg`.
+
+
+| Original Image | Processed (Seam Carving) |
+| :---: | :---: |
+| <img src="images/img1.jpg" width="400"> | <img src="out-images/img1.jpg" width="400"> |
+| <img src="images/img2.jpg" width="400"> | <img src="out-images/img2.jpg" width="400"> |
+| <img src="images/img3.jpg" width="400"> | <img src="out-images/img3.jpg" width="400"> |
+| <img src="images/img4.jpg" width="400"> | <img src="out-images/img4.jpg" width="400"> |
+| <img src="images/img5.jpg" width="400"> | <img src="out-images/img5.jpg" width="400"> |
+
+
